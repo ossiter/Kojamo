@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="fi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Oikotie & Lumo – Vuokra-ilmoitukset</title>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 24px; }
+    .card { border: 1px solid #ccc; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+    h2 { margin-top: 0; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Oikotie Rental Listings (Market)</h2>
+    <div id="chart-oikotie" style="height:360px"></div>
+  </div>
+  <div class="card">
+    <h2>Lumo Rental Listings (Company)</h2>
+    <div id="chart-lumo" style="height:360px"></div>
+  </div>
+
+  <script>
+    async function loadCSV(path){
+      const res = await fetch(path, {cache:"no-cache"});
+      const text = await res.text();
+      const [header, ...lines] = text.trim().split(/\r?\n/);
+      const cols = header.split(",");
+      const idx = Object.fromEntries(cols.map((c,i)=>[c,i]));
+      const rows = lines.map(line=>{
+        const parts = line.split(",");
+        return {
+          date: parts[idx.date],
+          oikotie: Number(parts[idx.oikotie]),
+          lumo: Number(parts[idx.lumo])
+        };
+      });
+      return rows;
+    }
+
+    function plot(el, x, y, name){
+      Plotly.newPlot(el, [{
+        x, y, mode:"lines+markers", name
+      }], {
+        margin:{l:60,r:20,t:20,b:60},
+        xaxis:{title:"Päivä"},
+        yaxis:{title:"Ilmoitusten määrä", separatethousands:true},
+      }, {displayModeBar:false, responsive:true});
+    }
+
+    (async () => {
+      const rows = await loadCSV("data/listings.csv");
+      const dates = rows.map(r=>r.date);
+      plot("chart-oikotie", dates, rows.map(r=>r.oikotie), "Oikotie Listings");
+      plot("chart-lumo", dates, rows.map(r=>r.lumo), "Lumo Listings");
+    })();
+  </script>
+</body>
+</html>
