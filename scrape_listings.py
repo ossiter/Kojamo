@@ -125,22 +125,22 @@ def fetch_oikotie_count() -> int:
 
 def fetch_lumo_count() -> int:
     soup = fetch_soup(TARGET_URL_LUMO)
+    # etsi kohta "Hakuehdoillasi löytyi N asuntoa"
+    hblock = soup.find(["h1", "h2"], string=re.compile("Hakuehdoillasi löytyi", re.I))
+    if hblock:
+        nums = find_candidate_counts(hblock.get_text(" ", strip=True))
+        val = choose_reasonable(nums, min_ok=50, max_ok=20_000)
+        if val:
+            return val
+
+    # fallback: koko sivun teksti
     text = soup.get_text(" ", strip=True)
     cands = find_candidate_counts(text)
-    # Lumo-yhtiön omassa haussa tyypillisesti ~500–5000 (jätetään leveä liikkumavara)
     val = choose_reasonable(cands, min_ok=50, max_ok=20_000)
-    if val is None:
-        # Jos yleishaku ei toimi, yritä etsiä h1/h2:sta erikseen
-        headings = " ".join(
-            [
-                *(tag.get_text(" ", strip=True) for tag in soup.find_all(["h1", "h2"])),
-            ]
-        )
-        cands2 = find_candidate_counts(headings)
-        val = choose_reasonable(cands2, min_ok=50, max_ok=20_000)
     if val is None:
         raise RuntimeError("Lumo: ei löytynyt järkevää listausmäärää")
     return val
+
 
 
 def init_csv(path: str):
@@ -197,3 +197,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
