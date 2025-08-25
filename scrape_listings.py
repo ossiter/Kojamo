@@ -12,7 +12,10 @@ import requests
 from bs4 import BeautifulSoup
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; rental-tracker/1.0; +you@example.com)"
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    )
 }
 
 TARGET_URL_OIKOTIE = "https://asunnot.oikotie.fi/vuokra-asunnot"
@@ -69,7 +72,7 @@ def fetch_oikotie_count() -> int:
 def fetch_lumo_count() -> int:
     soup = fetch_soup(TARGET_URL_LUMO)
 
-    # 1) Yritä suoraan h1/h2: “Hakuehdoillasi löytyi 1 246 asuntoa”
+    # 1) Suoraan h1/h2: “Hakuehdoillasi löytyi 1 246 asuntoa”
     heading = soup.find(["h1", "h2"], string=re.compile(r"Hakuehdoill?asi löytyi", re.I))
     if heading:
         htext = heading.get_text(" ", strip=True)
@@ -80,7 +83,7 @@ def fetch_lumo_count() -> int:
                 print(f"[DEBUG] Lumo exact heading match -> '{htext}' -> {val}")
                 return val
 
-    # 2) Jos ei löytynyt, etsi koko sivulta sama fraasi
+    # 2) Fallback: sama fraasi koko sivulta
     page_text = soup.get_text(" ", strip=True)
     m2 = re.search(r"Hakuehdoill?asi löytyi\s+([0-9 \u00A0]+)\s+asuntoa", page_text, re.I)
     if m2:
@@ -89,7 +92,7 @@ def fetch_lumo_count() -> int:
             print(f"[DEBUG] Lumo exact page match -> {val}")
             return val
 
-    # 3) Viimeinen fallback: kohtuullinen numeroalue (mutta EI etsi mitään 'max' temppua)
+    # 3) Viimeinen fallback: järkevän alueen luvut
     cands = find_numbers(page_text)
     val = choose_reasonable(cands, 50, 20_000)
     if val is None:
@@ -131,4 +134,10 @@ def main():
         rows[-1] = [today, str(oikotie), str(lumo)]
         write_rows(CSV_PATH, rows)
     else:
-        with open(CSV_PATH, "a", newl_
+        with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([today, oikotie, lumo])
+
+    print(f"{today}: Oikotie={oikotie}, Lumo={lumo}")
+
+if __name__ == "__main__":
+    main()
