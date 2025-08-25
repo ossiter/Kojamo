@@ -1,5 +1,5 @@
 # scrape_listings.py
-# Kerää Oikotie- ja Lumo-vuokra-asuntojen listausmäärät ja tallentaa data/listings.csv-tiedostoon
+# Kerää Oikotie- ja Lumo-vuokra-asuntojen listausmäärät ja tallentaa data/listings.csv
 
 import csv
 import datetime as dt
@@ -11,190 +11,124 @@ from typing import List, Optional
 import requests
 from bs4 import BeautifulSoup
 
-# ---- ASETUKSET ---------------------------------------------------------------
-
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; rental-tracker/1.0; +you@example.com)"
 }
 
-# Hakusivut (voit rajata kaupunkiin tms. vaihtamalla näitä URL:eja)
 TARGET_URL_OIKOTIE = "https://asunnot.oikotie.fi/vuokra-asunnot"
 TARGET_URL_LUMO = "https://lumo.fi/vuokra-asunnot"
 
-# CSV-polku
 CSV_DIR = "data"
 CSV_PATH = os.path.join(CSV_DIR, "listings.csv")
 
-# -----------------------------------------------------------------------------
-
-# Yleisiä numero-regexeja (välilyönti voi olla tavallinen tai sitova \u00A0)
-RE_GROUPED_INT = r"\d{1,3}(?:[ \u00A0]?\d{3})+"  # esim. 29 123 tai 29123
-RE_PLAIN_INT = r"\d{3,}"  # varmistetaan ettei aivan pieniä (kuten vuosilukuja) napata
-
-# Fraasit, joiden yhteydestä yritetään poimia kokonaismäärä
-COUNT_KEYWORDS = [
-    "hakutulosta", "hakutulokset", "ilmoitusta", "ilmoitukset", "asuntoa", "asuntoja", "kohdetta", "kohteet",
-    "yhteensä", "kaikkiaan"
-]
-
+RE_GROUPED_INT = r"\d{1,3}(?:[ \u00A0]?\d{3})+"
+RE_PLAIN_INT = r"\d{3,}"
 
 def fetch_soup(url: str, tries: int = 3, delay: float = 2.0) -> BeautifulSoup:
-    """Lataa sivun ja palauttaa BeautifulSoup-olion, tekee muutaman uudelleenyrityksen."""
-    last_exc = None
+    last = None
     for i in range(tries):
         try:
-            resp = requests.get(url, headers=HEADERS, timeout=30)
-            resp.raise_for_status()
-            return BeautifulSoup(resp.text, "html.parser")
-        except Exception as exc:
-            last_exc = exc
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            return BeautifulSoup(r.text, "html.parser")
+        except Exception as e:
+            last = e
             if i < tries - 1:
                 time.sleep(delay)
-    raise RuntimeError(f"Sivun haku epäonnistui: {url} ({last_exc})")
-
+    raise RuntimeError(f"Sivun haku epäonnistui: {url} ({last})")
 
 def _clean_to_int(s: str) -> Optional[int]:
-    """Poista kaikki paitsi numerot ja muunna intiksi. Palauta None jos ei järkevä."""
-    digits = re.sub(r"[^\d]", "", s)
-    if not digits:
-        return None
-    try:
-        return int(digits)
-    except Exception:
-        return None
+    d = re.sub(r"[^\d]", "", s or "")
+    return int(d) if d else None
 
-
-def find_candidate_counts(text: str) -> List[int]:
-    """
-    Etsi tekstistä lukumääräkandidaatteja:
-    - fraasin (asuntoa/ilmoitusta/hakutulosta/...) läheltä
-    - ' / 12 345 ' -tyyliset "Näytetään 1–24 / 12 345 asuntoa"
-    - varalta myös irralliset iso(t) luvut
-    """
-    candidates: List[int] = []
-
-    # 1) "jotain ... 12 345 asuntoa|ilmoitusta|hakutulosta"
-    rx_keywords = re.compile(
-        rf"({RE_GROUPED_INT}|{RE_PLAIN_INT})\s*(?:{'|'.join(COUNT_KEYWORDS)})",
-        flags=re.IGNORECASE,
-    )
-    for m in rx_keywords.finditer(text):
-        val = _clean_to_int(m.group(1))
-        if val is not None:
-            candidates.append(val)
-
-    # 2) " / 12 345 " (esim. Näytetään 1–24 / 12 345 asuntoa)
-    rx_slash_total = re.compile(
-        rf"/\s*({RE_GROUPED_INT}|{RE_PLAIN_INT})\s*(?:{'|'.join(COUNT_KEYWORDS)})?",
-        flags=re.IGNORECASE,
-    )
-    for m in rx_slash_total.finditer(text):
-        val = _clean_to_int(m.group(1))
-        if val is not None:
-            candidates.append(val)
-
-    # 3) Varavaralla: kaikki isohkot luvut
+def find_numbers(text: str) -> List[int]:
     rx_all = re.compile(rf"({RE_GROUPED_INT}|{RE_PLAIN_INT})")
+    out: List[int] = []
     for m in rx_all.finditer(text):
-        val = _clean_to_int(m.group(1))
-        if val is not None:
-            candidates.append(val)
+        v = _clean_to_int(m.group(1))
+        if v is not None:
+            out.append(v)
+    return out
 
-    return candidates
+def choose_reasonable(cands: List[int], lo: int, hi: int) -> Optional[int]:
+    xs = [x for x in cands if lo <= x <= hi]
+    return max(xs) if xs else None
 
-
-def choose_reasonable(cands: List[int], min_ok: int, max_ok: int) -> Optional[int]:
-    """Rajaa kandidaatit järkevään väliin ja palauta 'paras' (tässä maksimi)."""
-    ok = [x for x in cands if min_ok <= x <= max_ok]
-    if not ok:
-        return None
-    # Usein kokonaismäärä on tekstissä suurin järkevän rangen luku
-    return max(ok)
-
-
+# ---------- OIKOTIE ----------
 def fetch_oikotie_count() -> int:
     soup = fetch_soup(TARGET_URL_OIKOTIE)
     text = soup.get_text(" ", strip=True)
-    cands = find_candidate_counts(text)
-    # Oikotien kokomarkkina on yleensä kymmeniä tuhansia (mutta pidetään raja laajana)
-    val = choose_reasonable(cands, min_ok=500, max_ok=300_000)
+    cands = find_numbers(text)
+    val = choose_reasonable(cands, 500, 300_000)
     if val is None:
-        raise RuntimeError("Oikotie: ei löytynyt järkevää listausmäärää")
+        raise RuntimeError("Oikotie: ei löytynyt järkevää lukua")
+    print(f"[DEBUG] Oikotie candidate max in range -> {val}")
     return val
 
-
+# ---------- LUMO (täsmäregex otsikosta) ----------
 def fetch_lumo_count() -> int:
     soup = fetch_soup(TARGET_URL_LUMO)
-    # etsi kohta "Hakuehdoillasi löytyi N asuntoa"
-    hblock = soup.find(["h1", "h2"], string=re.compile("Hakuehdoillasi löytyi", re.I))
-    if hblock:
-        nums = find_candidate_counts(hblock.get_text(" ", strip=True))
-        val = choose_reasonable(nums, min_ok=50, max_ok=20_000)
-        if val:
+
+    # 1) Yritä suoraan h1/h2: “Hakuehdoillasi löytyi 1 246 asuntoa”
+    heading = soup.find(["h1", "h2"], string=re.compile(r"Hakuehdoill?asi löytyi", re.I))
+    if heading:
+        htext = heading.get_text(" ", strip=True)
+        m = re.search(r"Hakuehdoill?asi löytyi\s+([0-9 \u00A0]+)\s+asuntoa", htext, re.I)
+        if m:
+            val = _clean_to_int(m.group(1))
+            if val is not None:
+                print(f"[DEBUG] Lumo exact heading match -> '{htext}' -> {val}")
+                return val
+
+    # 2) Jos ei löytynyt, etsi koko sivulta sama fraasi
+    page_text = soup.get_text(" ", strip=True)
+    m2 = re.search(r"Hakuehdoill?asi löytyi\s+([0-9 \u00A0]+)\s+asuntoa", page_text, re.I)
+    if m2:
+        val = _clean_to_int(m2.group(1))
+        if val is not None:
+            print(f"[DEBUG] Lumo exact page match -> {val}")
             return val
 
-    # fallback: koko sivun teksti
-    text = soup.get_text(" ", strip=True)
-    cands = find_candidate_counts(text)
-    val = choose_reasonable(cands, min_ok=50, max_ok=20_000)
+    # 3) Viimeinen fallback: kohtuullinen numeroalue (mutta EI etsi mitään 'max' temppua)
+    cands = find_numbers(page_text)
+    val = choose_reasonable(cands, 50, 20_000)
     if val is None:
-        raise RuntimeError("Lumo: ei löytynyt järkevää listausmäärää")
+        raise RuntimeError("Lumo: ei löytynyt järkevää lukua (tai fraasia)")
+    print(f"[DEBUG] Lumo fallback candidate -> {val}")
     return val
 
-
-
+# ---------- CSV-apurit ----------
 def init_csv(path: str):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if not os.path.exists(path):
         with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["date", "oikotie", "lumo"])
+            csv.writer(f).writerow(["date", "oikotie", "lumo"])
 
-
-def read_last_row(path: str) -> Optional[List[str]]:
+def read_rows(path: str) -> List[List[str]]:
     if not os.path.exists(path):
-        return None
-    last = None
+        return []
     with open(path, newline="", encoding="utf-8") as f:
-        r = csv.reader(f)
-        header_seen = False
-        for row in r:
-            if not header_seen:
-                header_seen = True
-                continue
-            last = row
-    return last
+        return list(csv.reader(f))
 
+def write_rows(path: str, rows: List[List[str]]):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerows(rows)
 
 def main():
     today = dt.date.today().isoformat()
     init_csv(CSV_PATH)
 
-    # Hae luvut
     oikotie = fetch_oikotie_count()
-    time.sleep(2)  # pieni viive
+    time.sleep(2)
     lumo = fetch_lumo_count()
 
-    # Älä duplaa samaa päivää; jos sama päivä löytyy, korvaa viimeinen rivi
-    last = read_last_row(CSV_PATH)
-    if last and last[0] == today:
-        # päivitä viimeisin rivi
-        rows = []
-        with open(CSV_PATH, newline="", encoding="utf-8") as f:
-            rows = list(csv.reader(f))
-        # rows[0] on header
+    rows = read_rows(CSV_PATH)
+    if not rows:
+        rows = [["date", "oikotie", "lumo"]]
+
+    # jos viimeinen rivi on tälle päivälle, korvaa se
+    if len(rows) >= 2 and rows[-1][0] == today:
         rows[-1] = [today, str(oikotie), str(lumo)]
-        with open(CSV_PATH, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerows(rows)
+        write_rows(CSV_PATH, rows)
     else:
-        with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow([today, oikotie, lumo])
-
-    print(f"{today}: Oikotie={oikotie}, Lumo={lumo}")
-
-
-if __name__ == "__main__":
-    main()
-
+        with open(CSV_PATH, "a", newl_
